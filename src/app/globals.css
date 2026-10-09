@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/*
+ * Cores do próprio WhatsApp Web, nos dois temas — as mesmas do Live Chat do
+ * next-home (`--color-wa-*`). Painel que precisa ser usado sem treino
+ * empresta o modelo que a pessoa já usa.
+ */
+:root {
+  color-scheme: light dark;
+}
+
+@theme {
+  --color-wa-fundo: light-dark(#efeae2, #0b141a);
+  --color-wa-app: light-dark(#d1d7db, #0c1317);
+  --color-wa-faixa: light-dark(#00a884, #00a884);
+  --color-wa-barra: light-dark(#f0f2f5, #202c33);
+  --color-wa-campo: light-dark(#ffffff, #2a3942);
+  --color-wa-busca: light-dark(#f0f2f5, #202c33);
+  --color-wa-lista: light-dark(#ffffff, #111b21);
+  --color-wa-hover: light-dark(#f5f6f6, #202c33);
+  --color-wa-ativa: light-dark(#f0f2f5, #2a3942);
+  --color-wa-divisor: light-dark(#e9edef, #222d34);
+  --color-wa-entrada: light-dark(#ffffff, #202c33);
+  --color-wa-saida: light-dark(#d9fdd3, #005c4b);
+  --color-wa-texto: light-dark(#111b21, #e9edef);
+  --color-wa-secundario: light-dark(#54656f, #aebac1);
+  --color-wa-meta: light-dark(#667781, #8696a0);
+  --color-wa-lida: #53bdeb;
+  --color-wa-verde: light-dark(#008069, #00a884);
+  --color-wa-botao: #00a884;
+  --color-wa-nome: light-dark(#1fa855, #06cf9c);
+  --color-wa-dia: light-dark(#ffffff, #182229);
+  --color-wa-citacao: light-dark(rgba(11, 20, 26, 0.05), rgba(255, 255, 255, 0.05));
+  --color-wa-badge: #25d366;
+  --color-wa-perigo: light-dark(#ea0038, #f15c6d);
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--color-wa-app);
+  color: var(--color-wa-texto);
+  font-family: "Segoe UI", "Helvetica Neue", Helvetica, "Lucida Grande", Arial, Ubuntu, Cantarell, "Fira Sans",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* O papel de parede do chat: rabisco suave por cima da cor de fundo. */
+.wa-papel {
+  background-color: var(--color-wa-fundo);
+  background-image: radial-gradient(light-dark(rgba(0, 0, 0, 0.035), rgba(255, 255, 255, 0.025)) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.wa-rolagem {
+  scrollbar-width: thin;
+  scrollbar-color: light-dark(rgba(11, 20, 26, 0.2), rgba(255, 255, 255, 0.16)) transparent;
+}
+
+@keyframes wa-entra {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.wa-entra {
+  animation: wa-entra 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
