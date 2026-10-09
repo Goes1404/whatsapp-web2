@@ -1,17 +1,30 @@
 import "server-only";
 
 import { chamar, configDoProvedor, instanciaUrl, type Config } from "./cliente";
-import { lerChats, lerContatos, lerGrupos, lerMensagens, type Chat, type Mensagem } from "./leitura";
+import { lerChats, lerContatos, lerGrupos, lerMensagens, lerRegistros, type Chat, type Mensagem } from "./leitura";
+import { banco } from "@/lib/banco/supabase";
+import {
+  brutoDaMensagem,
+  listarConversasDoBanco,
+  mensagensDoBanco,
+  salvarMensagens,
+  semConversas,
+  semMensagens,
+  semearConversas,
+  zerarNaoLidas,
+} from "@/lib/banco/repositorio";
 
 /**
- * Conversas e mensagens, lidas do que a própria Evolution guarda.
+ * Conversas e mensagens.
  *
- * Não há banco neste app: a fonte é o armazenamento da Evolution, que recebe
- * o histórico do celular (`syncFullHistory`) e cada mensagem nova. Para isso
- * o servidor da Evolution precisa estar com `DATABASE_ENABLED=true` e
- * `DATABASE_SAVE_DATA_NEW_MESSAGE` / `..._HISTORIC` / `..._CHATS` /
- * `..._CONTACTS` ligados (ver README). Sem isso, as listas voltam vazias — e
- * a tela diz por quê, em vez de mostrar um WhatsApp sem conversa nenhuma.
+ * Com o Supabase configurado (`SUPABASE_URL` + `SUPABASE_SECRET_KEY`), a
+ * fonte é o banco do app, que o webhook da Evolution preenche
+ * (`/api/webhook/evolution`). Sem ele, a fonte é o armazenamento da própria
+ * Evolution, que só existe se o servidor dela estiver com
+ * `DATABASE_SAVE_DATA_*` ligados (ver README).
+ *
+ * Banco vazio (conexão recém-feita, ou mensagens anteriores ao webhook): o
+ * que a Evolution tiver guardado é importado uma vez, na primeira leitura.
  */
 
 export class ProvedorIndisponivel extends Error {}
@@ -44,14 +57,26 @@ async function nomes(config: Config) {
   return cacheNomes;
 }
 
-export async function listarConversas(): Promise<Chat[]> {
-  const config = exigirConfig();
+async function conversasDaEvolution(config: Config): Promise<Chat[]> {
   const [r, n] = await Promise.all([
     chamar(config, "POST", `/chat/findChats/${instanciaUrl(config)}`, {}, 20_000),
     nomes(config),
   ]);
   if (!r.ok) throw new Error(r.detalhe);
   return lerChats(r.json, { contatos: n.contatos, grupos: n.grupos });
+}
+
+export async function listarConversas(): Promise<Chat[]> {
+  const config = exigirConfig();
+  const db = banco();
+  if (!db) return conversasDaEvolution(config);
+
+  if (await semConversas(db)) {
+    const daEvolution = await conversasDaEvolution(config).catch(() => [] as Chat[]);
+    if (daEvolution.length) await semearConversas(db, daEvolution);
+  }
+  const n = await nomes(config);
+  return listarConversasDoBanco(db, n.grupos);
 }
 
 export const MENSAGENS_POR_PAGINA = 50;
@@ -65,6 +90,54 @@ export async function buscarMensagens(
   pagina = 1,
 ): Promise<{ mensagens: Mensagem[]; temMais: boolean }> {
   const config = exigirConfig();
+  const db = banco();
+  if (!db) return mensagensDaEvolution(config, jid, pagina);
+
+  if (pagina === 1 && (await semMensagens(db, jid))) {
+    await importarDaEvolution(config, jid).catch((e) => console.warn(`[importar] ${jid}: ${e}`));
+  }
+  return mensagensDoBanco(db, jid, pagina, MENSAGENS_POR_PAGINA);
+}
+
+/** Traz para o banco o que a Evolution já guardou desta conversa (até 500). */
+async function importarDaEvolution(config: Config, jid: string) {
+  const db = banco();
+  if (!db) return;
+  const r = await chamar<unknown>(
+    config,
+    "POST",
+    `/chat/findMessages/${instanciaUrl(config)}`,
+    { where: { key: { remoteJid: jid } }, page: 1, offset: 500, limit: 500 },
+    20_000,
+  );
+  if (!r.ok) return;
+  const { mensagens, reacoes } = lerRegistros(r.json);
+  if (!mensagens.length) return;
+  await salvarMensagens(db, {
+    mensagens: mensagens.filter((m) => m.jid === jid),
+    reacoes,
+    brutos: brutosDe(r.json),
+    historico: true,
+  });
+}
+
+function brutosDe(resposta: unknown): Map<string, unknown> {
+  const mapa = new Map<string, unknown>();
+  const lista = Array.isArray(resposta)
+    ? resposta
+    : ((resposta as { messages?: { records?: unknown[] } } | null)?.messages?.records ?? []);
+  for (const i of lista) {
+    const o = i as { key?: { id?: unknown }; message?: unknown };
+    if (typeof o?.key?.id === "string" && o.message) mapa.set(o.key.id, { key: o.key, message: o.message });
+  }
+  return mapa;
+}
+
+async function mensagensDaEvolution(
+  config: Config,
+  jid: string,
+  pagina: number,
+): Promise<{ mensagens: Mensagem[]; temMais: boolean }> {
   const [r, n] = await Promise.all([
     chamar<unknown>(
       config,
@@ -90,6 +163,8 @@ export async function buscarMensagens(
 }
 
 export async function marcarComoLidas(jid: string, ids: string[]): Promise<void> {
+  const db = banco();
+  if (db) await zerarNaoLidas(db, jid);
   const config = configDoProvedor();
   if (!config || ids.length === 0) return;
   await chamar(config, "POST", `/chat/markMessageAsRead/${instanciaUrl(config)}`, {
@@ -119,11 +194,22 @@ export async function baixarMidia(params: {
 }): Promise<{ bytes: Buffer; mimetype: string; nome: string | null } | null> {
   const config = configDoProvedor();
   if (!config) return null;
+  /*
+   * Com a mensagem INTEIRA (key + message) a Evolution decifra direto, sem
+   * procurar a mensagem no banco dela. Só com o id ela procura — e servidor
+   * que não guarda mensagens responde "Message not found" (lição do
+   * next-home, 30/09/2026: 100% dos áudios falhavam assim).
+   */
+  const db = banco();
+  const bruto = db ? await brutoDaMensagem(db, params.id) : null;
+  const message = bruto?.key && bruto?.message
+    ? { key: bruto.key, message: bruto.message }
+    : { key: { id: params.id, remoteJid: params.jid, fromMe: params.deMim } };
   const r = await chamar<{ base64?: unknown; mimetype?: unknown; fileName?: unknown }>(
     config,
     "POST",
     `/chat/getBase64FromMediaMessage/${instanciaUrl(config)}`,
-    { message: { key: { id: params.id, remoteJid: params.jid, fromMe: params.deMim } }, convertToMp4: false },
+    { message, convertToMp4: false },
     30_000,
   );
   if (!r.ok) {
@@ -150,10 +236,22 @@ function idDaResposta(json: unknown): string | null {
  * A prova de envio é a CHAVE da mensagem (`key.id`), não o HTTP 2xx — regra
  * do next-home depois de 27 mensagens "enviadas" que nunca saíram.
  */
-function comoEnvio(r: Awaited<ReturnType<typeof chamar>>): ResultadoEnvio {
+async function comoEnvio(r: Awaited<ReturnType<typeof chamar>>): Promise<ResultadoEnvio> {
   if (!r.ok) return { enviado: false, detalhe: r.detalhe };
   const id = idDaResposta(r.json);
-  return id ? { enviado: true, id } : { enviado: false, detalhe: "O WhatsApp não confirmou o envio." };
+  if (!id) return { enviado: false, detalhe: "O WhatsApp não confirmou o envio." };
+
+  // A resposta do envio É a mensagem: grava já, sem esperar o webhook.
+  const db = banco();
+  if (db) {
+    const { mensagens } = lerRegistros([r.json]);
+    if (mensagens.length) {
+      await salvarMensagens(db, { mensagens, brutos: brutosDe([r.json]), historico: false }).catch((e) =>
+        console.warn(`[envio] gravar ${id}: ${e}`),
+      );
+    }
+  }
+  return { enviado: true, id };
 }
 
 export async function enviarTexto(jid: string, textoMsg: string, citarId?: string | null): Promise<ResultadoEnvio> {

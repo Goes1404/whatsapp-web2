@@ -329,32 +329,52 @@ function lerUma(registro: unknown, nomes: Map<string, string>): (Mensagem & { _r
   };
 }
 
+export type Reacao = { alvo: string; quem: string; emoji: string; em: string };
+
+/**
+ * Mensagens e reações de uma lista de registros (resposta de `findMessages`
+ * ou `data` de um webhook), separadas: a reação não é balão, é um emoji
+ * pendurado na mensagem que ela reage.
+ */
+export function lerRegistros(
+  resposta: unknown,
+  nomes: Map<string, string> = new Map(),
+): { mensagens: Mensagem[]; reacoes: Reacao[] } {
+  const vistas = new Map<string, Mensagem>();
+  const reacoes: Reacao[] = [];
+  for (const r of registros(resposta)) {
+    const m = lerUma(r, nomes);
+    if (!m) continue;
+    if (m._reacao) {
+      reacoes.push({ alvo: m._reacao.alvo, quem: m.deMim ? "eu" : m.autorJid ?? m.jid, emoji: m._reacao.emoji, em: m.em });
+      continue;
+    }
+    if (!vistas.has(m.id)) vistas.set(m.id, m);
+  }
+  return {
+    mensagens: [...vistas.values()].sort((a, b) => a.em.localeCompare(b.em)),
+    reacoes: reacoes.sort((a, b) => a.em.localeCompare(b.em)),
+  };
+}
+
 /**
  * Mensagens da resposta de `findMessages`, da mais antiga para a mais
  * recente, sem repetidas, com as reações penduradas na mensagem que reagem.
  */
 export function lerMensagens(resposta: unknown, nomes: Map<string, string> = new Map()): Mensagem[] {
-  const vistas = new Map<string, Mensagem>();
-  const reacoes = new Map<string, Map<string, string>>(); // alvo → (quem → emoji)
-  for (const r of registros(resposta)) {
-    const m = lerUma(r, nomes);
-    if (!m) continue;
-    if (m._reacao) {
-      const quem = m.deMim ? "eu" : m.autorJid ?? m.jid;
-      const doAlvo = reacoes.get(m._reacao.alvo) ?? new Map<string, string>();
-      // A mais recente vale; emoji vazio = reação removida.
-      doAlvo.set(quem, m._reacao.emoji);
-      reacoes.set(m._reacao.alvo, doAlvo);
-      continue;
-    }
-    if (!vistas.has(m.id)) vistas.set(m.id, m);
+  const { mensagens, reacoes } = lerRegistros(resposta, nomes);
+  const porAlvo = new Map<string, Map<string, string>>();
+  for (const r of reacoes) {
+    // A mais recente vale; emoji vazio = reação removida.
+    const doAlvo = porAlvo.get(r.alvo) ?? new Map<string, string>();
+    doAlvo.set(r.quem, r.emoji);
+    porAlvo.set(r.alvo, doAlvo);
   }
-  const lista = [...vistas.values()].sort((a, b) => a.em.localeCompare(b.em));
-  for (const m of lista) {
-    const r = reacoes.get(m.id);
+  for (const m of mensagens) {
+    const r = porAlvo.get(m.id);
     if (r) m.reacoes = [...r.values()].filter(Boolean);
   }
-  return lista;
+  return mensagens;
 }
 
 /** Nome por jid, a partir de `findContacts`. */
@@ -437,4 +457,9 @@ export function lerChats(
     if (!anterior || (chat.em ?? "") > (anterior.em ?? "")) porJid.set(jid, chat);
   }
   return [...porJid.values()].sort((a, b) => (b.em ?? "").localeCompare(a.em ?? ""));
+}
+
+/** `READ`, `DELIVERY_ACK`, 3… → status da tela. Para o webhook de MESSAGES_UPDATE. */
+export function lerStatusPublico(v: unknown): StatusMensagem {
+  return lerStatus(v);
 }

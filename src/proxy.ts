@@ -8,7 +8,9 @@ import { COOKIE_SESSAO, tokenValido } from "@/lib/sessao/token";
  */
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (pathname === "/entrar" || pathname === "/api/sessao") return NextResponse.next();
+  if (pathname === "/entrar" || pathname === "/api/sessao" || pathname === "/api/webhook/evolution") {
+    return NextResponse.next(); // o webhook confere o próprio segredo
+  }
 
   const ok = await tokenValido(request.cookies.get(COOKIE_SESSAO)?.value);
   if (ok) return NextResponse.next();

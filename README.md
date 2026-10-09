@@ -20,29 +20,35 @@ A parte de conexão foi copiada do **next-home** (`src/lib/whatsapp/provider.ts`
 ## Como funciona
 
 ```
-navegador ──(consulta a cada 3–5 s)──▶ rotas /api/* (Next.js) ──▶ Evolution API v2 ──▶ WhatsApp
+WhatsApp ──▶ Evolution API ──webhook──▶ /api/webhook/evolution ──▶ Supabase
+                    ▲                                                  │
+                    └──── enviar / mídia ◀── rotas /api/* ◀── navegador (consulta a cada 3–5 s)
 ```
 
-Não há banco de dados neste app. Conversas e mensagens vêm do que a própria
-Evolution guarda: ao conectar, o celular envia o histórico
-(`syncFullHistory`) e cada mensagem nova é salva por ela.
+- O **webhook** grava cada mensagem nova, o histórico que o celular envia ao
+  conectar (`syncFullHistory`), os ✓✓ de entrega/leitura, reações e nomes de
+  contato nas tabelas `wa_conversas`, `wa_mensagens` e `wa_contatos`.
+- A mensagem que você envia é gravada na hora, pela própria resposta do envio.
+- A **mídia** é decifrada pela Evolution sob demanda, com a mensagem inteira
+  guardada no banco (`bruto`) — funciona mesmo com a Evolution sem armazenamento.
+- Banco vazio numa conversa: o que a Evolution tiver guardado é importado na
+  primeira abertura.
+- Sem `SUPABASE_URL`/`SUPABASE_SECRET_KEY`, o app lê direto do armazenamento
+  da Evolution (exige `DATABASE_SAVE_DATA_*` ligado no servidor dela).
 
-**Requisito no servidor da Evolution** (variáveis de ambiente dela, não deste
-app):
+### Configurar o banco (uma vez)
 
-```
-DATABASE_ENABLED=true
-DATABASE_SAVE_DATA_INSTANCE=true
-DATABASE_SAVE_DATA_NEW_MESSAGE=true
-DATABASE_SAVE_MESSAGE_UPDATE=true
-DATABASE_SAVE_DATA_CONTACTS=true
-DATABASE_SAVE_DATA_CHATS=true
-DATABASE_SAVE_DATA_HISTORIC=true
-```
+1. No Supabase → **SQL Editor**, cole e rode
+   `supabase/migrations/0001_whatsapp_web.sql`.
+2. Preencha `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `WHATSAPP_WEBHOOK_URL` e
+   `WHATSAPP_WEBHOOK_SECRET` (ver `.env.example`).
+3. Conecte o número. O webhook é registrado na instância a cada conexão (e
+   reconferido a cada 10 min), então não há nada para configurar no painel
+   da Evolution.
 
-Sem isso, a lista volta vazia (a tela avisa). Atenção: a instância do
-next-home **não** guarda mensagens (MEMORIA de 30/09/2026); se for usar o
-mesmo servidor, ligue o armazenamento antes.
+As tabelas têm RLS ligada e nenhuma policy, e os grants de `anon` e
+`authenticated` são revogados: só o servidor do app, com a chave secreta,
+lê e escreve.
 
 ## Rodar
 
@@ -66,8 +72,10 @@ Verificações: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`
 | `POST /api/conversas/[jid]/digitando` | mostra "digitando…" |
 | `GET /api/midia` | foto/vídeo/áudio/documento decifrado |
 | `GET /api/foto` | foto de perfil |
+| `POST /api/webhook/evolution` | eventos da Evolution (exige `x-webhook-secret`) |
 
-Tudo exige sessão (`src/proxy.ts` + checagem em cada rota).
+Tudo exige sessão (`src/proxy.ts` + checagem em cada rota), menos o
+webhook, que exige o segredo dele.
 
 ## Limites conhecidos
 

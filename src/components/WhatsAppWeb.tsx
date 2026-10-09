@@ -265,8 +265,8 @@ export function WhatsAppWeb({
             {chats !== null && chats.length === 0 && !erro && (
               <li className="m-4 rounded-md bg-wa-busca p-4 text-sm leading-relaxed text-wa-secundario">
                 Nenhuma conversa guardada ainda. Logo depois de conectar, o celular envia o histórico e ele aparece aqui
-                em alguns minutos. Se continuar vazio, o servidor da Evolution precisa estar com o armazenamento de
-                mensagens ligado (<code>DATABASE_SAVE_DATA_*</code> — veja o README).
+                em alguns minutos; mensagens novas aparecem assim que chegam. Se continuar vazio, confira o banco e o
+                webhook (<code>SUPABASE_*</code> e <code>WHATSAPP_WEBHOOK_*</code> — veja o README).
               </li>
             )}
             {chats !== null && chats.length > 0 && lista.length === 0 && (

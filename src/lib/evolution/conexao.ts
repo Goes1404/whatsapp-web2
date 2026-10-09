@@ -3,6 +3,7 @@ import "server-only";
 import { chamar, configDoProvedor, instanciaUrl, type Config } from "./cliente";
 import { decidirPareamentoPorNumero } from "./pareamento";
 import { normalizarTelefoneBr } from "./telefone";
+import { EVENTOS_DO_WEBHOOK } from "./webhook";
 
 /**
  * Conectar, consultar e desconectar o número — portado de
@@ -37,7 +38,23 @@ type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (typeof v === "object" && v !== null ? (v as Obj) : {});
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
 
+/** O webhook que grava as mensagens no banco, quando há banco e endereço. */
+function webhookDaInstancia(): Record<string, unknown> | null {
+  const url = process.env.WHATSAPP_WEBHOOK_URL;
+  const segredo = process.env.WHATSAPP_WEBHOOK_SECRET;
+  if (!url || !segredo) return null;
+  return {
+    enabled: true,
+    url,
+    byEvents: false,
+    base64: false,
+    headers: { "x-webhook-secret": segredo },
+    events: EVENTOS_DO_WEBHOOK,
+  };
+}
+
 async function garantirInstancia(config: Config, numero?: string | null): Promise<void> {
+  const webhook = webhookDaInstancia();
   // Se já existe, a Evolution recusa e seguimos para o connect — de propósito.
   await chamar(config, "POST", "/instance/create", {
     instanceName: config.instancia,
@@ -45,7 +62,30 @@ async function garantirInstancia(config: Config, numero?: string | null): Promis
     integration: "WHATSAPP-BAILEYS",
     syncFullHistory: true,
     ...(numero ? { number: numero } : {}),
+    ...(webhook ? { webhook } : {}),
   });
+  // A instância pode já existir de antes (o create acima é recusado): o
+  // webhook é reafirmado sempre, senão as mensagens não chegariam ao banco.
+  await garantirWebhook(config);
+}
+
+let webhookConferidoEm = 0;
+
+/**
+ * `webhook/set` na instância. Idempotente; refeito no máximo a cada 10 min
+ * enquanto o número está conectado, para uma troca de endereço ou de
+ * segredo valer sem reconectar.
+ */
+export async function garantirWebhook(config: Config, forcar = true): Promise<void> {
+  const webhook = webhookDaInstancia();
+  if (!webhook) {
+    if (forcar) console.warn("[conexao] WHATSAPP_WEBHOOK_URL/SECRET ausentes: as mensagens não serão gravadas no banco.");
+    return;
+  }
+  if (!forcar && Date.now() - webhookConferidoEm < 10 * 60_000) return;
+  const r = await chamar(config, "POST", `/webhook/set/${instanciaUrl(config)}`, { webhook }, 10_000);
+  if (r.ok) webhookConferidoEm = Date.now();
+  else console.warn(`[conexao] webhook/set falhou: ${r.detalhe}`);
 }
 
 /** Dados do perfil conectado (nome e foto), da lista de instâncias. */
@@ -88,6 +128,7 @@ export async function consultarEstado(): Promise<EstadoConexao> {
   const estado = str(obj(json.instance).state) ?? str(json.state) ?? "desconhecido";
   const conectado = estado === "open";
   const perfil = conectado ? await perfilDaInstancia(config) : { nome: null, foto: null, telefone: null };
+  if (conectado) await garantirWebhook(config, false);
   return { ok: true, conectado, estado, ...perfil };
 }
 
