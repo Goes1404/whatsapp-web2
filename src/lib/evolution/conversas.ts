@@ -236,7 +236,15 @@ function idDaResposta(json: unknown): string | null {
  * A prova de envio é a CHAVE da mensagem (`key.id`), não o HTTP 2xx — regra
  * do next-home depois de 27 mensagens "enviadas" que nunca saíram.
  */
-async function comoEnvio(r: Awaited<ReturnType<typeof chamar>>): Promise<ResultadoEnvio> {
+/**
+ * `enviado` descreve o que saiu, para gravar quando a resposta da Evolution
+ * vier só com a chave (algumas versões devolvem a mensagem inteira, outras
+ * não). Sem isso, a mensagem só apareceria quando o webhook chegasse.
+ */
+async function comoEnvio(
+  r: Awaited<ReturnType<typeof chamar>>,
+  enviado?: { jid: string; message: Record<string, unknown> },
+): Promise<ResultadoEnvio> {
   if (!r.ok) return { enviado: false, detalhe: r.detalhe };
   const id = idDaResposta(r.json);
   if (!id) return { enviado: false, detalhe: "O WhatsApp não confirmou o envio." };
@@ -244,9 +252,19 @@ async function comoEnvio(r: Awaited<ReturnType<typeof chamar>>): Promise<Resulta
   // A resposta do envio É a mensagem: grava já, sem esperar o webhook.
   const db = banco();
   if (db) {
-    const { mensagens } = lerRegistros([r.json]);
+    const resposta = r.json as { message?: unknown } | null;
+    const registro =
+      resposta?.message || !enviado
+        ? r.json
+        : {
+            key: { id, fromMe: true, remoteJid: enviado.jid },
+            message: enviado.message,
+            messageTimestamp: Math.floor(Date.now() / 1000),
+            status: "SERVER_ACK",
+          };
+    const { mensagens } = lerRegistros([registro]);
     if (mensagens.length) {
-      await salvarMensagens(db, { mensagens, brutos: brutosDe([r.json]), historico: false }).catch((e) =>
+      await salvarMensagens(db, { mensagens, brutos: brutosDe([registro]), historico: false }).catch((e) =>
         console.warn(`[envio] gravar ${id}: ${e}`),
       );
     }
@@ -261,7 +279,7 @@ export async function enviarTexto(jid: string, textoMsg: string, citarId?: strin
     text: textoMsg,
     ...(citarId ? { quoted: { key: { id: citarId } } } : {}),
   });
-  return comoEnvio(r);
+  return comoEnvio(r, { jid, message: { conversation: textoMsg } });
 }
 
 export async function enviarArquivo(params: {
